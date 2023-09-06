@@ -5,6 +5,12 @@
 #
 import yamlargparse
 import os
+import sys
+import inspect
+
+currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
+parentdir = "/".join(currentdir.split("/")[:-2])
+sys.path.insert(0, parentdir) 
 
 parser = yamlargparse.ArgumentParser(description='EEND training')
 parser.add_argument('-c', '--config', help='config file path',
@@ -54,6 +60,17 @@ parser.add_argument('--transformer-encoder-n-layers', default=2, type=int)
 parser.add_argument('--transformer-encoder-dropout', default=0.1, type=float)
 parser.add_argument('--gradient-accumulation-steps', default=1, type=int)
 parser.add_argument('--seed', default=777, type=int)
+parser.add_argument('--wandb',default=False, action='store_true' )
+parser.add_argument('--patience', default=0, type=int)
+parser.add_argument('--stop_measure', default="loss", type=str)
+parser.add_argument('--stop_measure_type', default="min", type=str)
+parser.add_argument('--shuffle',default=False, action='store_true' )
+parser.add_argument('--attractor_loss_ratio', default=1, type=float)
+parser.add_argument('--attractor_encoder_dropout', default=0.1, type=float)
+parser.add_argument('--attractor_decoder_dropout', default=0.1, type=float)
+parser.add_argument('--collar', default=0, type=float)
+parser.add_argument('--skip_overlap',default=False, action='store_true' )
+
 args = parser.parse_args()
 
 if not os.path.exists(args.model_save_dir):

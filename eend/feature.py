@@ -60,7 +60,7 @@ def transform(
         n_fft = 2 * (Y.shape[1] - 1)
         sr = 8000
         n_mels = 23
-        mel_basis = librosa.filters.mel(sr, n_fft, n_mels)
+        mel_basis = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels)
         Y = np.dot(Y ** 2, mel_basis.T)
         Y = np.log10(np.maximum(Y, 1e-10))
         mean = np.mean(Y, axis=0)
@@ -253,6 +253,7 @@ def get_labeledSTFT(
     speakers = np.unique(
             [kaldi_obj.utt2spk[seg['utt']] for seg
                 in filtered_segments]).tolist()
+ 
     if n_speakers is None:
         n_speakers = len(speakers)
     T = np.zeros((Y.shape[0], n_speakers), dtype=np.int32)
@@ -275,7 +276,10 @@ def get_labeledSTFT(
         if start < end_frame and end_frame <= end:
             rel_end = end_frame - start
         if rel_start is not None or rel_end is not None:
-            T[rel_start:rel_end, speaker_index] = 1
+            try:
+                T[rel_start:rel_end, speaker_index] = 1
+            except Exception as e:
+                ee = 0
             if use_speaker_id:
                 S[rel_start:rel_end, all_speaker_index] = 1
 

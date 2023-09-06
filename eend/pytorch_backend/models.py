@@ -25,6 +25,7 @@ class NoamScheduler(_LRScheduler):
         warmup_steps: int
             The number of steps to linearly increase the learning rate.
     """
+
     def __init__(self, optimizer, d_model, warmup_steps, last_epoch=-1):
         self.d_model = d_model
         self.warmup_steps = warmup_steps
@@ -33,7 +34,7 @@ class NoamScheduler(_LRScheduler):
         # the initial learning rate is set as step = 1
         if self.last_epoch == -1:
             for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
-                param_group['lr'] = lr
+                param_group["lr"] = lr
             self.last_epoch = 0
         print(self.d_model)
 
@@ -44,8 +45,19 @@ class NoamScheduler(_LRScheduler):
 
 
 class TransformerModel(nn.Module):
-    def __init__(self, n_speakers, in_size, n_heads, n_units, n_layers, dim_feedforward=2048, dropout=0.5, has_pos=False):
-        """ Self-attention-based diarization model.
+    def __init__(
+        self,
+        n_speakers,
+        in_size,
+        n_heads,
+        n_units,
+        n_layers,
+        dim_feedforward=2048,
+        dropout=0.5,
+        decode=True,
+        has_pos=False,
+    ):
+        """Self-attention-based diarization model.
 
         Args:
           n_speakers (int): Number of speakers in recording
@@ -70,13 +82,15 @@ class TransformerModel(nn.Module):
             self.pos_encoder = PositionalEncoding(n_units, dropout)
         encoder_layers = TransformerEncoderLayer(n_units, n_heads, dim_feedforward, dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layers, n_layers)
+
         self.decoder = nn.Linear(n_units, n_speakers)
+        self.decode = decode
 
         self.init_weights()
 
     def _generate_square_subsequent_mask(self, sz):
         mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        mask = mask.float().masked_fill(mask == 0, float("-inf")).masked_fill(mask == 1, float(0.0))
         return mask
 
     def init_weights(self):
@@ -86,7 +100,7 @@ class TransformerModel(nn.Module):
         self.decoder.bias.data.zero_()
         self.decoder.weight.data.uniform_(-initrange, initrange)
 
-    def forward(self, src, has_mask=False, activation=None):
+    def forward(self, src, ilens, has_mask=False, activation=None):
         if has_mask:
             device = src.device
             if self.src_mask is None or self.src_mask.size(0) != src.size(1):
@@ -95,8 +109,8 @@ class TransformerModel(nn.Module):
         else:
             self.src_mask = None
 
-        ilens = [x.shape[0] for x in src]
-        src = nn.utils.rnn.pad_sequence(src, padding_value=-1, batch_first=True)
+        # ilens = [x.shape[0] for x in src]
+        # src = nn.utils.rnn.pad_sequence(src, padding_value=-1, batch_first=True)
 
         # src: (B, T, E)
         src = self.encoder(src)
@@ -110,24 +124,28 @@ class TransformerModel(nn.Module):
         output = self.transformer_encoder(src, self.src_mask)
         # output: (B, T, E)
         output = output.transpose(0, 1)
-        # output: (B, T, C)
-        output = self.decoder(output)
+        if self.decode:
+            # output: (B, T, C)
+            output = self.decoder(output)
 
-        if activation:
-            output = activation(output)
+            if activation:
+                output = activation(output)
 
-        output = [out[:ilen] for out, ilen in zip(output, ilens)]
+            output = [out[:ilen] for out, ilen in zip(output, ilens)]
 
-        return output
+            return output
+        else:
+            return output
 
     def get_attention_weight(self, src):
         # NOTE: NOT IMPLEMENTED CORRECTLY!!!
         attn_weight = []
+
         def hook(module, input, output):
             # attn_output, attn_output_weights = multihead_attn(query, key, value)
             # output[1] are the attention weights
             attn_weight.append(output[1])
-            
+
         handles = []
         for l in range(self.n_layers):
             handles.append(self.transformer_encoder.layers[l].self_attn.register_forward_hook(hook))
@@ -159,6 +177,7 @@ class PositionalEncoding(nn.Module):
     Examples:
         >>> pos_encoder = PositionalEncoding(d_model)
     """
+
     def __init__(self, d_model, dropout=0.1, max_len=5000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
@@ -169,16 +188,127 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
+        self.register_buffer("pe", pe)
 
     def forward(self, x):
         # Add positional information to each time step of x
-        x = x + self.pe[:x.size(0), :]
+        x = x + self.pe[: x.size(0), :]
         return self.dropout(x)
+
+
+class EncoderDecoderAttractor(nn.Module):
+    def __init__(self, n_units, encoder_dropout=0.1, decoder_dropout=0.1, bidirectional=False):
+        super(EncoderDecoderAttractor, self).__init__()
+   
+        self.encoder = nn.LSTM(
+                input_size=n_units,
+                hidden_size=n_units,
+                num_layers=1,
+                dropout=encoder_dropout,
+                bidirectional=bidirectional,
+                batch_first=True,
+            )
+        self.decoder = nn.LSTM(
+                input_size=n_units,
+                hidden_size=n_units,
+                num_layers=1,
+                dropout=encoder_dropout,
+                bidirectional=bidirectional,
+                batch_first=True,
+            )
+        self.counter = nn.Sequential(nn.Linear(n_units, 1), nn.Sigmoid())
+        self.n_units = n_units
+
+    def forward(self, xs, zeros, lens=None):
+        if lens is None:
+            output, (h_e, c_e) = self.encoder(packed)  # default (h, c) are zeros
+            attractors, (h_d, c_d) = self.decoder(zeros, (h_e, c_e))
+        else:
+            packed = torch.nn.utils.rnn.pack_padded_sequence(xs, lens, batch_first=True, enforce_sorted=False)
+            output, (h_e, c_e) = self.encoder(packed)  # default (h, c) are zeros
+            attractors, (h_d, c_d) = self.decoder(zeros, (h_e, c_e))
+        attractors_prob = self.counter(attractors)
+        return attractors, attractors_prob
+
+
+def create_speakers_zeros(batch_size, max_speakers, n_units, device):
+    return torch.zeros(batch_size, max_speakers, n_units, device=device)
+
+
+class TransformerEDADiarization(nn.Module):
+    def __init__(
+        self,
+        in_size,
+        n_units,
+        n_heads,
+        n_layers,
+        dropout,
+        attractor_encoder_dropout=0.1,
+        attractor_decoder_dropout=0.1,
+        has_pos=False,
+        shuffle=False,
+    ):
+        """Self-attention-based diarization model.
+
+        Args:
+          in_size (int): Dimension of input feature vector
+          n_units (int): Number of units in a self-attention block
+          n_heads (int): Number of attention heads
+          n_layers (int): Number of transformer-encoder layers
+          dropout (float): dropout ratio
+          attractor_encoder_dropout (float)
+          attractor_decoder_dropout (float)
+          has_pos (bool): Whether to use positional encoding
+        """
+        super(TransformerEDADiarization, self).__init__()
+
+        self.enc = TransformerModel(
+            n_speakers=15,
+            in_size=in_size,
+            n_units=n_units,
+            n_heads=n_heads,
+            n_layers=n_layers,
+            dropout=dropout,
+            has_pos=has_pos,
+            decode=False,
+        )
+        self.eda = EncoderDecoderAttractor(
+            n_units,
+            encoder_dropout=attractor_encoder_dropout,
+            decoder_dropout=attractor_decoder_dropout,
+        )
+        self.shuffle = shuffle
+
+    def forward(self, xs, n_speakers=None, activation=None):
+        lens = [x.shape[0] for x in xs]
+  
+        emb = self.enc(xs, lens)
+        zeros = create_speakers_zeros(len(lens), max(n_speakers)+1, emb[0].shape[1], emb.device) # add one for the next zero attractor
+        if self.shuffle and self.training:
+            orders = [torch.arange(max(lens)) for i, e_len in enumerate(lens)] # in training all segment has the same length therefore we can shuffle the order
+            
+            for idx,(order, c_len) in enumerate(zip(orders, lens)):
+                new_per = torch.randperm(c_len)
+                order[:c_len] = new_per
+            stack_orders = torch.stack(orders)
+            attractors, attractors_prob = self.eda(emb[torch.arange(emb.shape[0]).unsqueeze(1),stack_orders], zeros, lens)
+        else:
+            attractors, attractors_prob = self.eda(emb, zeros, lens)
+        # ys = [F.matmul(e, att, transb=True) for e, att in zip(emb, attractors)]
+        logits = torch.matmul(emb, attractors.transpose(1,2))
+        return logits, attractors_prob
+
+    def estimate(self, xs, lens=None, n_speakers=None, activation=None):
+        emb = self.enc(xs)
+        zeros = create_speakers_zeros(emb.shape[0], max(n_speakers), emb.shape[2], emb.device)
+        attractors, attractors_prob = self.eda(emb, zeros, lens)
+        # TODO: implement
+        return emb
 
 
 if __name__ == "__main__":
     import torch
+
     model = TransformerModel(5, 40, 4, 512, 2, 0.1)
     input = torch.randn(8, 500, 40)
     print("Model output:", model(input).size())

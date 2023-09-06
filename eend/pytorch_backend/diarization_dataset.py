@@ -55,7 +55,9 @@ class KaldiDiarizationDataset(torch.utils.data.Dataset):
         self.frame_shift = frame_shift
         self.subsampling = subsampling
         self.input_transform = input_transform
-        self.n_speakers = n_speakers
+        if n_speakers == -1:
+            n_speakers = None
+        self.n_speakers = n_speakers 
         self.chunk_indices = []
         self.label_delay = label_delay
 
@@ -71,6 +73,8 @@ class KaldiDiarizationDataset(torch.utils.data.Dataset):
                     subsampling=self.subsampling):
                 self.chunk_indices.append(
                         (rec, st * self.subsampling, ed * self.subsampling))
+        # self.chunk_indices = self.chunk_indices[2050:2150]
+        # self.chunk_indices = self.chunk_indices[:500]
         print(len(self.chunk_indices), " chunks")
 
     def __len__(self):
@@ -93,6 +97,6 @@ class KaldiDiarizationDataset(torch.utils.data.Dataset):
         # Y_ss: (frame / subsampling, num_ceps * (context_size * 2 + 1))
         Y_ss, T_ss = feature.subsample(Y_spliced, T, self.subsampling)
 
-        Y_ss = torch.from_numpy(Y_ss).float()
-        T_ss = torch.from_numpy(T_ss).float()
+        Y_ss = torch.FloatTensor(Y_ss)
+        T_ss = torch.FloatTensor(T_ss)
         return Y_ss, T_ss

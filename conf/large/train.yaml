@@ -2,13 +2,13 @@
 sampling_rate: 8000
 frame_size: 200
 frame_shift: 80
-model_type: Transformer
+model_type: EDATransformer #Transformer
 max_epochs: 100
 gradclip: 5
-batchsize: 64
+batchsize: 64 # 64
 hidden_size: 256
 num_frames: 500
-num_speakers: 2
+num_speakers: -1 # TODO-1: change this to 4
 input_transform: logmel23_mn
 optimizer: noam
 lr: 1.0
@@ -20,4 +20,14 @@ transformer_encoder_n_layers: 4
 transformer_encoder_dropout: 0.1
 noam_warmup_steps: 100000
 seed: 777
-gpu: 1
+gpu: 4
+wandb: True
+patience: 10
+stop_measure: loss
+stop_measure_type: min
+attractor_loss_ratio: 1.0
+attractor_encoder_dropout: 0.1
+attractor_decoder_dropout: 0.1
+shuffle: True
+collar: 0
+skip_overlap: False

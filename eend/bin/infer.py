@@ -5,6 +5,12 @@
 #
 import os
 import yamlargparse
+import sys
+import inspect
+
+currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
+parentdir = "/".join(currentdir.split("/")[:-2])
+sys.path.insert(0, parentdir) 
 
 parser = yamlargparse.ArgumentParser(description='decoding')
 parser.add_argument('-c', '--config', help='config file path',
@@ -46,6 +52,7 @@ print(str(args))
 
 if not os.path.exists(args.out_dir):
     os.makedirs(args.out_dir)
+
 
 from eend.pytorch_backend.infer import infer
 infer(args)

@@ -7,10 +7,12 @@ export PYTHONPATH=`pwd`:$PYTHONPATH
 exp_dir=exp_large
 conf_dir=conf/large
 
-train_dir=data/simu/data/swb_sre_tr_ns2_beta2_100000
-dev_dir=data/simu/data/swb_sre_cv_ns2_beta2_500
+# train_dir=data/simu/data/swb_sre_tr_ns2_beta2_100000
+# dev_dir=data/simu/data/swb_sre_cv_ns2_beta2_500
 model_dir=$exp_dir/models
 train_conf=$conf_dir/train.yaml
+train_set=/home/mlspeech/shua/home/Shua/recipies/Diar/EEND/egs/callhome/v1/data/simu/data/swb_sre_tr_ns1n2n3n4_beta2n2n5n9_100000
+valid_set=/home/mlspeech/shua/home/Shua/recipies/Diar/EEND/egs/callhome/v1/data/simu/data/swb_sre_cv_ns1n2n3n4_beta2n2n5n9_500
 
 train_adapt_dir=data/eval/callhome1_spk2
 dev_adapt_dir=data/eval/callhome2_spk2

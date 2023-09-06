@@ -156,8 +156,12 @@ class KaldiData:
                 os.path.join(self.data_dir, 'reco2dur'))
         self.spk2utt = load_spk2utt(
                 os.path.join(self.data_dir, 'spk2utt'))
+        self.wav_data_dir = "/home/mlspeech/shua/home/Shua/recipies/Diar/EEND/egs/callhome/v1/" # TODO- FIX TO NORMAL PATH
 
     def load_wav(self, recid, start=0, end=None):
+        wav_path =  self.wavs[recid]    
+        if not os.path.exists( wav_path):
+            wav_path = os.path.join(self.wav_data_dir, wav_path)
         data, rate = load_wav(
-            self.wavs[recid], start, end)
+            wav_path, start, end)
         return data, rate
