@@ -208,10 +208,10 @@ def report_diarization_error(ys, labels):
         
 
 
-def speakers_loss(logit, n_speakers, device):
+def speakers_loss(prob, n_speakers, device):
     labels = torch.concat([torch.LongTensor([[1] * n_spk + [0]]) for n_spk in n_speakers], axis=1).to(device)
-    selected_logit = torch.concat([(logiti[:n_speakers[i]+1, :]).reshape(-1) for i, logiti in enumerate(logit)])
-    loss = F.binary_cross_entropy_with_logits(selected_logit, labels.squeeze(0).float())
+    selected_prob = torch.concat([(logiti[:n_speakers[i]+1, :]).reshape(-1) for i, logiti in enumerate(prob)])
+    loss = F.binary_cross_entropy(selected_prob, labels.squeeze(0).float())
     return loss
 
 class PitLoss(nn.Module):
@@ -337,6 +337,9 @@ class DiarizationErrorPyannote():
         states["DER"] = abs(self.metric)
         return states
     
+    def reset(self):
+        self.metric.reset()
+
 def init_pool(batch_size=2):
     
    original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -346,6 +349,7 @@ def init_pool(batch_size=2):
    return pool
 
 class DiarizationErrorPyannoteProcess():
+
     def __init__(self, collar=0, skip_overlap=True, threshold=0.5, window=0.1) -> None:
         self.collar = collar
         self.skip_overlap = skip_overlap
@@ -404,9 +408,103 @@ class DiarizationErrorPyannoteProcess():
             self.total_der_dict[k] = self.total_der_dict.get(k, 0) + v
         return der_dict
 
+    def reset(self):
+        self.total_der_dict = {}
 
 
     def compute(self):
         states = self.total_der_dict
         states["DER"] = (states['false alarm']  + states['missed detection'] + states['confusion'])/ states['total']
         return states
+
+from torchmetrics import Metric
+from torch import Tensor
+class DiarizationErrorPyannoteProcessMetric(Metric):
+    
+    def __init__(self, collar=0, skip_overlap=True, threshold=0.5, window=0.1) -> None:
+        super().__init__()
+        self.collar = collar
+        self.skip_overlap = skip_overlap
+        self.threshold = threshold
+        self.window = window
+        self.add_state("confusion", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("missed_detection", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("false_alarm", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("correct", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+
+    def calc_example_der(self, example_idx,example_pred, example_target, n_spk, example_len):
+
+        example_pred = example_pred[:example_len]
+        example_target = example_target[:example_len]
+        example_pred = example_pred[:, :n_spk] # remove last speaker
+        example_pred = example_pred > self.threshold
+
+        pred_speaker_segments = create_speaker_segments(example_pred, n_spk)
+        target_speaker_segments = create_speaker_segments(example_target, n_spk)
+        pred_segments_array_sorted = sorted(pred_speaker_segments,key =lambda x:x[0])
+        tagret_segments_array_sorted = sorted(target_speaker_segments,key =lambda x:x[0])
+        hypothesis = create_pyannote_annotation(pred_segments_array_sorted, self.window)
+        reference = create_pyannote_annotation(tagret_segments_array_sorted, self.window)
+        metric_der = DiarizationErrorRate(collar=self.collar, skip_overlap=self.skip_overlap)
+        example_der = metric_der(reference, hypothesis, detailed=True)
+        return example_der
+    
+    def update(self, hypothesis_tensor: list, reference_tensor: list, lens=None, n_speakers=None):
+
+        if n_speakers is None:
+            n_speakers = [t.shape[1] for t in reference_tensor]
+
+        batch_size = len(n_speakers)
+        # num_process = max(16,int(batch_size/2),1)
+        num_process = 8 
+        # num_process = 1
+        if lens is None:
+            lens = [len(t) for t in reference_tensor]
+        pool = init_pool(num_process)
+        der_dict = {}
+        list_idx = list(range(0,batch_size))
+        for i in range(0, batch_size, num_process):
+            try:
+                selected_idx_batch = list_idx[i:i+num_process]
+
+                params_list = [ (example_idx,  torch.sigmoid(hypothesis_tensor[example_idx]).cpu().numpy(), reference_tensor[example_idx].cpu().numpy(),
+                                 n_speakers[example_idx], lens[example_idx]) for example_idx in selected_idx_batch]
+                
+                example_der_dict_list = pool.starmap(self.calc_example_der, (params_list))
+                for example_der_dict in example_der_dict_list:
+                    for k, v in example_der_dict.items():
+                        der_dict[k] = der_dict.get(k, 0) + v
+            except KeyboardInterrupt:
+                print("Caught KeyboardInterrupt, terminating workers")
+                pool.terminate()
+            except Exception as e:
+                print(e)
+                pool.close()
+        pool.close()
+        pool.join()
+
+        for k, v in der_dict.items():
+            if k == 'confusion':
+                self.confusion += v
+            elif k == 'missed detection':
+                self.missed_detection += v
+            elif k == 'false alarm':
+                self.false_alarm += v
+            elif k == 'correct':
+                self.correct += v
+            elif k == 'total':
+                self.total += v
+            
+
+    def compute(self):
+        states = {}
+        states["DER"] = (self.confusion  + self.missed_detection + self.false_alarm)/ self.total
+        states["confusion"] = self.confusion
+        states["missed detection"] = self.missed_detection
+        states["false alarm"] = self.false_alarm
+        states["correct"] = self.correct
+        states["total"] = self.total
+
+        return torch.FloatTensor([v for v in states.values()]).to(self.device)

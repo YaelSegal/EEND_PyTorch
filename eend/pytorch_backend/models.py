@@ -298,12 +298,26 @@ class TransformerEDADiarization(nn.Module):
         logits = torch.matmul(emb, attractors.transpose(1,2))
         return logits, attractors_prob
 
-    def estimate(self, xs, lens=None, n_speakers=None, activation=None):
-        emb = self.enc(xs)
-        zeros = create_speakers_zeros(emb.shape[0], max(n_speakers), emb.shape[2], emb.device)
-        attractors, attractors_prob = self.eda(emb, zeros, lens)
-        # TODO: implement
-        return emb
+    def estimate(self, xs, lens=None, n_speakers=15, threshold=0.5 ):
+        lens = [x.shape[0] for x in xs]
+        emb = self.enc(xs, lens)
+        zeros = create_speakers_zeros(len(lens), n_speakers+1, emb[0].shape[1], emb.device) # add one for the next zero attractor
+        if self.shuffle and self.training:
+            orders = [torch.arange(max(lens)) for i, e_len in enumerate(lens)] # in training all segment has the same length therefore we can shuffle the order
+            
+            for idx,(order, c_len) in enumerate(zip(orders, lens)):
+                new_per = torch.randperm(c_len)
+                order[:c_len] = new_per
+            stack_orders = torch.stack(orders)
+            attractors, attractors_prob = self.eda(emb[torch.arange(emb.shape[0]).unsqueeze(1),stack_orders], zeros, lens)
+        else:
+            attractors, attractors_prob = self.eda(emb, zeros, lens)
+        # ys = [F.matmul(e, att, transb=True) for e, att in zip(emb, attractors)]
+        logits = torch.matmul(emb, attractors.transpose(1,2))
+        non_active_speaker = attractors_prob < threshold
+        logits = logits.transpose(1,2)
+        logits[non_active_speaker.squeeze(2)] = -torch.inf
+        return logits.transpose(1,2), attractors_prob
 
 
 if __name__ == "__main__":

@@ -20,7 +20,16 @@ def get_input_dim(
     input_dim = (2 * context_size + 1) * frame_size
     return input_dim
 
-
+def get_nfeatures(transform_type):
+    if transform_type == 'log':
+        return 0 # TODO: what the real value is?
+    elif transform_type == 'logmel':
+        return 40
+    elif transform_type == 'logmel23' or transform_type == 'logmel23_swn' or transform_type == 'logmel23_mn' or transform_type == 'logmel23_mvn':
+        return 23
+    else:
+        raise ValueError('Unknown transform_type: %s' % transform_type)
+    
 def transform(
         Y,
         transform_type=None,
@@ -45,21 +54,21 @@ def transform(
     elif transform_type == 'logmel':
         n_fft = 2 * (Y.shape[1] - 1)
         sr = 16000
-        n_mels = 40
+        n_mels = get_nfeatures(transform_type)
         mel_basis = librosa.filters.mel(sr, n_fft, n_mels)
         Y = np.dot(Y ** 2, mel_basis.T)
         Y = np.log10(np.maximum(Y, 1e-10))
     elif transform_type == 'logmel23':
         n_fft = 2 * (Y.shape[1] - 1)
         sr = 8000
-        n_mels = 23
+        n_mels = get_nfeatures(transform_type)
         mel_basis = librosa.filters.mel(sr, n_fft, n_mels)
         Y = np.dot(Y ** 2, mel_basis.T)
         Y = np.log10(np.maximum(Y, 1e-10))
     elif transform_type == 'logmel23_mn':
         n_fft = 2 * (Y.shape[1] - 1)
         sr = 8000
-        n_mels = 23
+        n_mels = get_nfeatures(transform_type)
         mel_basis = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels)
         Y = np.dot(Y ** 2, mel_basis.T)
         Y = np.log10(np.maximum(Y, 1e-10))
@@ -68,7 +77,7 @@ def transform(
     elif transform_type == 'logmel23_swn':
         n_fft = 2 * (Y.shape[1] - 1)
         sr = 8000
-        n_mels = 23
+        n_mels = get_nfeatures(transform_type)
         mel_basis = librosa.filters.mel(sr, n_fft, n_mels)
         Y = np.dot(Y ** 2, mel_basis.T)
         Y = np.log10(np.maximum(Y, 1e-10))
@@ -85,7 +94,7 @@ def transform(
     elif transform_type == 'logmel23_mvn':
         n_fft = 2 * (Y.shape[1] - 1)
         sr = 8000
-        n_mels = 23
+        n_mels = get_nfeatures(transform_type)
         mel_basis = librosa.filters.mel(sr, n_fft, n_mels)
         Y = np.dot(Y ** 2, mel_basis.T)
         Y = np.log10(np.maximum(Y, 1e-10))
@@ -101,6 +110,7 @@ def transform(
 def subsample(Y, T, subsampling=1):
     """ Frame subsampling
     """
+
     Y_ss = Y[::subsampling]
     T_ss = T[::subsampling]
     return Y_ss, T_ss
@@ -247,8 +257,11 @@ def get_labeledSTFT(
     """
     data, rate = kaldi_obj.load_wav(
             rec, start * frame_shift, end * frame_shift)
+
     Y = stft(data, frame_size, frame_shift)
+
     filtered_segments = kaldi_obj.segments[rec]
+
     # filtered_segments = kaldi_obj.segments[kaldi_obj.segments['rec'] == rec]
     speakers = np.unique(
             [kaldi_obj.utt2spk[seg['utt']] for seg
@@ -276,10 +289,8 @@ def get_labeledSTFT(
         if start < end_frame and end_frame <= end:
             rel_end = end_frame - start
         if rel_start is not None or rel_end is not None:
-            try:
-                T[rel_start:rel_end, speaker_index] = 1
-            except Exception as e:
-                ee = 0
+            T[rel_start:rel_end, speaker_index] = 1
+    
             if use_speaker_id:
                 S[rel_start:rel_end, all_speaker_index] = 1
 
