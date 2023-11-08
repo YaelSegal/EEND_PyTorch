@@ -107,13 +107,11 @@ def transform(
     return Y.astype(dtype)
 
 
-def subsample(Y, T, subsampling=1):
+def subsample(Y, subsampling=1):
     """ Frame subsampling
     """
-
     Y_ss = Y[::subsampling]
-    T_ss = T[::subsampling]
-    return Y_ss, T_ss
+    return Y_ss
 
 
 def splice(Y, context_size=0):
@@ -200,12 +198,17 @@ def get_frame_labels(
         T: label
             (n_frames, n_speakers)-shaped np.int32 array
     """
-    filtered_segments = kaldi_obj.segments[kaldi_obj.segments['rec'] == rec]
+    filtered_segments = kaldi_obj.segments[rec]
     speakers = np.unique(
             [kaldi_obj.utt2spk[seg['utt']] for seg
                 in filtered_segments]).tolist()
+    flag_fix_t = False
     if n_speakers is None:
         n_speakers = len(speakers)
+    else:
+        if len(speakers) > n_speakers: # when n_speaker
+            n_speakers = len(speakers)
+            flag_fix_t = True
     es = end * frame_shift if end is not None else None
     data, rate = kaldi_obj.load_wav(
             rec, start * frame_shift, es)
@@ -227,6 +230,12 @@ def get_frame_labels(
             rel_end = end_frame - start
         if rel_start is not None or rel_end is not None:
             T[rel_start:rel_end, speaker_index] = 1
+    if flag_fix_t:
+        active_idx = (np.sum(T,axis=0) > 0)
+        if active_idx.sum() > 0:
+            T = T[:,active_idx]
+        else:
+            T = np.expand_dims( T[:, 0], axis=1)
     return T
 
 
@@ -266,9 +275,13 @@ def get_labeledSTFT(
     speakers = np.unique(
             [kaldi_obj.utt2spk[seg['utt']] for seg
                 in filtered_segments]).tolist()
- 
+    flag_fix_t = False
     if n_speakers is None:
         n_speakers = len(speakers)
+    else:
+        if len(speakers) > n_speakers: # when n_speaker
+            n_speakers = len(speakers)
+            flag_fix_t = True
     T = np.zeros((Y.shape[0], n_speakers), dtype=np.int32)
 
     if use_speaker_id:
@@ -293,8 +306,85 @@ def get_labeledSTFT(
     
             if use_speaker_id:
                 S[rel_start:rel_end, all_speaker_index] = 1
-
+    if flag_fix_t:
+        active_idx = (np.sum(T,axis=0) > 0)
+        if active_idx.sum() > 0:
+            T = T[:,active_idx]
+        else:
+            T = np.expand_dims( T[:, 0], axis=1)
     if use_speaker_id:
         return Y, T, S
     else:
         return Y, T
+
+def get_labels(
+        kaldi_obj,
+        rec, start, end, frame_size, frame_shift,
+        n_speakers=None,
+        use_speaker_id=False):
+    """ Extracts STFT and corresponding labels
+
+    Extracts STFT and corresponding diarization labels for
+    given recording id and start/end times
+
+    Args:
+        kaldi_obj (KaldiData)
+        rec (str): recording id
+        start (int): start frame index
+        end (int): end frame index
+        frame_size (int): number of samples in a frame
+        frame_shift (int): number of shift samples
+        n_speakers (int): number of speakers
+            if None, the value is given from data
+    Returns:
+        Y: STFT
+            (n_frames, n_bins)-shaped np.complex64 array,
+        T: label
+            (n_frmaes, n_speakers)-shaped np.int32 array.
+    """
+    info = kaldi_obj.load_info(rec)
+    rate = info.samplerate
+    filtered_segments = kaldi_obj.segments[rec]
+
+    speakers = np.unique(
+            [kaldi_obj.utt2spk[seg['utt']] for seg
+                in filtered_segments]).tolist()
+    
+    flag_fix_t = False
+    if n_speakers is None:
+        n_speakers = len(speakers)
+    else:
+        if len(speakers) > n_speakers: # when n_speaker
+            n_speakers = len(speakers)
+            flag_fix_t = True
+
+    # n_frames = ((data_len - (win_size - 1) - 1) / hop_size) + 1
+    T = np.zeros((end - start, n_speakers), dtype=np.int32)
+
+    for seg in filtered_segments:
+        speaker_index = speakers.index(kaldi_obj.utt2spk[seg['utt']])
+ 
+        start_frame = np.rint(
+                seg['st'] * rate / frame_shift).astype(int)
+        end_frame = np.rint(
+                seg['et'] * rate / frame_shift).astype(int)
+        rel_start = rel_end = None
+        if start <= start_frame and start_frame < end:
+            rel_start = start_frame - start
+        if start < end_frame and end_frame <= end:
+            rel_end = end_frame - start
+        if rel_start is not None or rel_end is not None:
+            T[rel_start:rel_end, speaker_index] = 1
+    if flag_fix_t:
+        active_idx = (np.sum(T,axis=0) > 0)
+        if active_idx.sum() > 0:
+            T = T[:,active_idx]
+        else:
+            T = np.expand_dims( T[:, 0], axis=1)
+    return T
+
+def get_wav(kaldi_obj,
+        rec, start, end, frame_shift):
+    data, rate = kaldi_obj.load_wav(
+            rec, start * frame_shift, end * frame_shift)
+    return data, rate

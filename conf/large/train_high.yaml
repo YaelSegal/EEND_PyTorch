@@ -24,7 +24,7 @@ seed: 777
 gpu: 4
 lightning: True
 wandb: False
-# wandb_id: None
+# wandb_id: 123
 tensorboard: False
 patience: 10
 stop_measure: val/loss
@@ -35,5 +35,10 @@ attractor_decoder_dropout: 0.1
 shuffle: True
 collar: 0
 skip_overlap: False
+test: False
+num_workers: 0
 speaker_threshold: 0.5
 max_num_speakers: -1
+freeze_encoder: False
+raw_wav: False
+model_sr: 8000

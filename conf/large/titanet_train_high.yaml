@@ -2,19 +2,19 @@
 sampling_rate: 8000
 frame_size: 200
 frame_shift: 80
-model_type: EDATransformer #Transformer
+model_type: TitanetEDA #Transformer, EDATransformer 
 max_epochs: 100
 gradclip: 5
-batchsize: 64 #
+batchsize: 128 # 128, 64
 hidden_size: 256
-num_frames: 500 # 500, 10
-test_num_frames: 2000 # 500, 10
+num_frames: 500 # 500, 1000
+test_num_frames: 31000 # 500, 1000
 num_speakers: -1 # TODO-1: change this to 4
 input_transform: logmel23_mn
 optimizer: noam
 lr: 1.0
-context_size: 7
-subsampling: 10 # 2
+context_size: 2
+subsampling: 2 # 2, 10
 gradient_accumulation_steps: 1
 transformer_encoder_n_heads: 4
 transformer_encoder_n_layers: 4
@@ -24,7 +24,7 @@ seed: 777
 gpu: 4
 lightning: True
 wandb: False
-# wandb_id: None
+# wandb_id: 123
 tensorboard: False
 patience: 10
 stop_measure: val/loss
@@ -39,6 +39,6 @@ test: False
 num_workers: 0
 speaker_threshold: 0.5
 max_num_speakers: -1
-freeze_encoder: False
-raw_wav: False
-model_sr: 8000
+freeze_encoder: True
+raw_wav: True
+model_sr: 16000

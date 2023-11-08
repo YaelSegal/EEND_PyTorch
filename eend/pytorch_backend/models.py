@@ -12,7 +12,8 @@ from torch.nn import TransformerEncoder, TransformerEncoderLayer
 
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.optim import Optimizer
-
+import nemo.collections.asr as nemo_asr
+from math import ceil
 
 class NoamScheduler(_LRScheduler):
     """
@@ -199,23 +200,23 @@ class PositionalEncoding(nn.Module):
 class EncoderDecoderAttractor(nn.Module):
     def __init__(self, n_units, encoder_dropout=0.1, decoder_dropout=0.1, bidirectional=False):
         super(EncoderDecoderAttractor, self).__init__()
-   
+
         self.encoder = nn.LSTM(
-                input_size=n_units,
-                hidden_size=n_units,
-                num_layers=1,
-                dropout=encoder_dropout,
-                bidirectional=bidirectional,
-                batch_first=True,
-            )
+            input_size=n_units,
+            hidden_size=n_units,
+            num_layers=1,
+            dropout=encoder_dropout,
+            bidirectional=bidirectional,
+            batch_first=True,
+        )
         self.decoder = nn.LSTM(
-                input_size=n_units,
-                hidden_size=n_units,
-                num_layers=1,
-                dropout=encoder_dropout,
-                bidirectional=bidirectional,
-                batch_first=True,
-            )
+            input_size=n_units,
+            hidden_size=n_units,
+            num_layers=1,
+            dropout=encoder_dropout,
+            bidirectional=bidirectional,
+            batch_first=True,
+        )
         self.counter = nn.Sequential(nn.Linear(n_units, 1), nn.Sigmoid())
         self.n_units = n_units
 
@@ -281,43 +282,168 @@ class TransformerEDADiarization(nn.Module):
 
     def forward(self, xs, n_speakers=None, activation=None):
         lens = [x.shape[0] for x in xs]
-  
+
         emb = self.enc(xs, lens)
-        zeros = create_speakers_zeros(len(lens), max(n_speakers)+1, emb[0].shape[1], emb.device) # add one for the next zero attractor
+        zeros = create_speakers_zeros(
+            len(lens), max(n_speakers) + 1, emb[0].shape[1], emb.device
+        )  # add one for the next zero attractor
         if self.shuffle and self.training:
-            orders = [torch.arange(max(lens)) for i, e_len in enumerate(lens)] # in training all segment has the same length therefore we can shuffle the order
-            
-            for idx,(order, c_len) in enumerate(zip(orders, lens)):
+            orders = [
+                torch.arange(max(lens)) for i, e_len in enumerate(lens)
+            ]  # in training all segment has the same length therefore we can shuffle the order
+
+            for idx, (order, c_len) in enumerate(zip(orders, lens)):
                 new_per = torch.randperm(c_len)
                 order[:c_len] = new_per
             stack_orders = torch.stack(orders)
-            attractors, attractors_prob = self.eda(emb[torch.arange(emb.shape[0]).unsqueeze(1),stack_orders], zeros, lens)
+            attractors, attractors_prob = self.eda(
+                emb[torch.arange(emb.shape[0]).unsqueeze(1), stack_orders], zeros, lens
+            )
         else:
             attractors, attractors_prob = self.eda(emb, zeros, lens)
         # ys = [F.matmul(e, att, transb=True) for e, att in zip(emb, attractors)]
-        logits = torch.matmul(emb, attractors.transpose(1,2))
+        logits = torch.matmul(emb, attractors.transpose(1, 2))
         return logits, attractors_prob
 
-    def estimate(self, xs, lens=None, n_speakers=15, threshold=0.5 ):
+    def estimate(self, xs, lens=None, n_speakers=15, threshold=0.5):
         lens = [x.shape[0] for x in xs]
         emb = self.enc(xs, lens)
-        zeros = create_speakers_zeros(len(lens), n_speakers+1, emb[0].shape[1], emb.device) # add one for the next zero attractor
+        zeros = create_speakers_zeros(
+            len(lens), n_speakers + 1, emb[0].shape[1], emb.device
+        )  # add one for the next zero attractor
         if self.shuffle and self.training:
-            orders = [torch.arange(max(lens)) for i, e_len in enumerate(lens)] # in training all segment has the same length therefore we can shuffle the order
-            
-            for idx,(order, c_len) in enumerate(zip(orders, lens)):
+            orders = [
+                torch.arange(max(lens)) for i, e_len in enumerate(lens)
+            ]  # in training all segment has the same length therefore we can shuffle the order
+
+            for idx, (order, c_len) in enumerate(zip(orders, lens)):
                 new_per = torch.randperm(c_len)
                 order[:c_len] = new_per
             stack_orders = torch.stack(orders)
-            attractors, attractors_prob = self.eda(emb[torch.arange(emb.shape[0]).unsqueeze(1),stack_orders], zeros, lens)
+            attractors, attractors_prob = self.eda(
+                emb[torch.arange(emb.shape[0]).unsqueeze(1), stack_orders], zeros, lens
+            )
         else:
             attractors, attractors_prob = self.eda(emb, zeros, lens)
         # ys = [F.matmul(e, att, transb=True) for e, att in zip(emb, attractors)]
-        logits = torch.matmul(emb, attractors.transpose(1,2))
+        logits = torch.matmul(emb, attractors.transpose(1, 2))
         non_active_speaker = attractors_prob < threshold
-        logits = logits.transpose(1,2)
+        logits = logits.transpose(1, 2)
         logits[non_active_speaker.squeeze(2)] = -torch.inf
-        return logits.transpose(1,2), attractors_prob
+        return logits.transpose(1, 2), attractors_prob
+
+
+class LambdaLayer(nn.Module):
+    def __init__(self, lambd):
+        super(LambdaLayer, self).__init__()
+        self.lambd = lambd
+
+    def forward(self, x):
+        return self.lambd(x)
+
+
+class TitanetEDADiarization(nn.Module):
+    def __init__(
+        self,
+        n_units,
+        context=1,
+        attractor_encoder_dropout=0.1,
+        attractor_decoder_dropout=0.1,
+        shuffle=False,
+        freeze_encoder=False,
+    ):
+        """Self-attention-based diarization model.
+
+        Args:
+          n_units (int): Number of units in a self-attention block
+          attractor_encoder_dropout (float)
+          attractor_decoder_dropout (float)
+        """
+        super(TitanetEDADiarization, self).__init__()
+
+        self.enc = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="titanet_large")
+        if freeze_encoder:
+            for param in self.enc.parameters():
+                param.requires_grad = False
+        else:
+            for param in self.enc.parameters():
+                param.requires_grad = True
+        self.contector = nn.Sequential(
+            nn.Linear(3072, n_units),
+            LambdaLayer(lambda x: x.transpose(1, 2)),
+            nn.AvgPool1d(kernel_size=context),
+            LambdaLayer(lambda x: x.transpose(1, 2)),
+        )  # check input dim!
+        self.context = context
+        self.eda = EncoderDecoderAttractor(
+            n_units,
+            encoder_dropout=attractor_encoder_dropout,
+            decoder_dropout=attractor_decoder_dropout,
+        )
+        self.shuffle = shuffle
+
+    def enc_foward(self, xs, lens=None):
+        processed_signal, processed_signal_len = self.enc.preprocessor(
+            input_signal=xs,
+            length=torch.LongTensor(lens).to(xs.device) if lens is not None else None,
+        )
+        encoded, length = self.enc.encoder(audio_signal=processed_signal, length=processed_signal_len)
+        return encoded, length
+
+    def forward(self, xs, xlens, n_speakers=None, activation=None):
+        emb, new_lengths = self.enc_foward(xs, xlens)
+        emb = self.contector(emb.transpose(1, 2))
+        lens = [ceil(leni.item() /2) for leni in new_lengths]
+        emb = emb[:, :max(lens), :]
+        zeros = create_speakers_zeros(
+            len(lens), max(n_speakers) + 1, emb[0].shape[1], emb.device
+        )  # add one for the next zero attractor
+        if self.shuffle and self.training:
+            orders = [
+                torch.arange(max(lens)) for i, e_len in enumerate(lens)
+            ]  # in training all segment has the same length therefore we can shuffle the order
+
+            for idx, (order, c_len) in enumerate(zip(orders, lens)):
+                new_per = torch.randperm(c_len)
+                order[:c_len] = new_per
+            stack_orders = torch.stack(orders)
+            attractors, attractors_prob = self.eda(
+                emb[torch.arange(emb.shape[0]).unsqueeze(1), stack_orders], zeros, lens
+            )
+        else:
+            attractors, attractors_prob = self.eda(emb, zeros, lens)
+        # ys = [F.matmul(e, att, transb=True) for e, att in zip(emb, attractors)]
+        logits = torch.matmul(emb, attractors.transpose(1, 2))
+        return logits, attractors_prob
+
+    def estimate(self, xs, xlens, n_speakers=15, threshold=0.5):
+        emb, new_lengths = self.enc_foward(xs, xlens)
+        emb = self.contector(emb.transpose(1, 2))
+        lens = [ceil(leni.item() /2) for leni in new_lengths]
+
+        zeros = create_speakers_zeros(
+            len(lens), n_speakers + 1, emb[0].shape[1], emb.device
+        )  # add one for the next zero attractor
+        if self.shuffle and self.training:
+            orders = [
+                torch.arange(max(lens)) for i, e_len in enumerate(lens)
+            ]  # in training all segment has the same length therefore we can shuffle the order
+
+            for idx, (order, c_len) in enumerate(zip(orders, lens)):
+                new_per = torch.randperm(c_len)
+                order[:c_len] = new_per
+            stack_orders = torch.stack(orders)
+            attractors, attractors_prob = self.eda(
+                emb[torch.arange(emb.shape[0]).unsqueeze(1), stack_orders], zeros, lens
+            )
+        else:
+            attractors, attractors_prob = self.eda(emb, zeros, lens)
+        # ys = [F.matmul(e, att, transb=True) for e, att in zip(emb, attractors)]
+        logits = torch.matmul(emb, attractors.transpose(1, 2))
+        non_active_speaker = attractors_prob < threshold
+        logits = logits.transpose(1, 2)
+        logits[non_active_speaker.squeeze(2)] = -torch.inf
+        return logits.transpose(1, 2), attractors_prob
 
 
 if __name__ == "__main__":

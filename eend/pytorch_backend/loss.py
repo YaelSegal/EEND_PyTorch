@@ -92,7 +92,7 @@ def batch_pit_n_speaker_loss(ys, ts, n_speakers_list, mask):
         # rolled along with speaker-axis
         ts_roll = [torch.roll(t, -shift, dims=1) for t in t_speakers_padd]
         targets = torch.nn.utils.rnn.pad_sequence(ts_roll, batch_first=True)
-        min_seq_len = min(ys.shape[1],ys.shape[1]) 
+        min_seq_len = min(ys.shape[1],targets.shape[1]) 
         # loss: (B, T, C)
         loss = F.binary_cross_entropy_with_logits(ys[:,:min_seq_len,:max_n_speakers ], targets[:,:min_seq_len], reduction='none')
         # sum over time: (B, C)

@@ -34,7 +34,7 @@ parser.add_argument('--resume', '-r', default='',
                     help='Resume the optimization from snapshot')
 parser.add_argument('--gpu', '-g', default=-1, type=int,
                     help='GPU ID (negative value indicates CPU)')
-parser.add_argument('--max-epochs', default=20, type=int,
+parser.add_argument('--max_epochs', default=20, type=int,
                     help='Max. number of epochs to train')
 parser.add_argument('--input-transform', default='',
                     choices=['', 'log', 'logmel', 'logmel23', 'logmel23_mn',
@@ -47,7 +47,7 @@ parser.add_argument('--gradclip', default=-1, type=int,
                     help='gradient clipping. if < 0, no clipping')
 parser.add_argument('--num-frames', default=2000, type=int,
                     help='number of frames in one utterance')
-parser.add_argument('--test-num-frames', default=2000, type=int,
+parser.add_argument('--test_num_frames', default=2000, type=int,
                     help='number of frames in one utterance')
 parser.add_argument('--batchsize', default=1, type=int,
                     help='number of utterances in one batch')
@@ -77,12 +77,17 @@ parser.add_argument('--attractor_encoder_dropout', default=0.1, type=float)
 parser.add_argument('--attractor_decoder_dropout', default=0.1, type=float)
 parser.add_argument('--speaker_threshold', default=0.5, type=float)
 parser.add_argument('--max_num_speakers', default=-1, type=int)
+parser.add_argument('--num_speakers', default=-1, type=int)
 parser.add_argument('--collar', default=0, type=float)
 parser.add_argument('--skip_overlap',default=False, action='store_true' )
 parser.add_argument('--lightning',default=False, action='store_true' )
 parser.add_argument('--tensorboard',default=False, action='store_true' )
 parser.add_argument('--wandb',default=False, action='store_true' )
 parser.add_argument('--wandb_id', default=None, type=str)
+parser.add_argument('--freeze_encoder',default=False, action='store_true' )
+parser.add_argument('--raw_wav',default=False, action='store_true' )
+parser.add_argument('--model_sr', default=8000, type=int)
+parser.add_argument('--num_workers', default=8000, type=int)
 
 args = parser.parse_args()
 
