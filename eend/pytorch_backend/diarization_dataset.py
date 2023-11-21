@@ -11,6 +11,8 @@ from eend import feature
 import timeit, functools
 import torchaudio
 import tqdm
+import time
+import math
 def _count_frames(data_len, size, step):
     # no padding at edges, last remaining samples are ignored
     return int((data_len - size + step) / step)
@@ -50,6 +52,8 @@ class KaldiDiarizationDataset(torch.utils.data.Dataset):
             n_speakers=None,
             raw_wav=False,
             model_sr = 16000,
+            npy_dir = None,
+            voice_only=False,
             ):
         self.data_dir = data_dir
         self.chunk_size = chunk_size
@@ -64,7 +68,8 @@ class KaldiDiarizationDataset(torch.utils.data.Dataset):
         self.chunk_indices = []
         self.label_delay = label_delay
 
-        self.data = kaldi_data.KaldiData(self.data_dir)
+        self.data = kaldi_data.KaldiData(self.data_dir, npy_dir=npy_dir)
+        self.npy_dir = npy_dir
         self.model_sr = model_sr
         self.raw_wav = raw_wav
         self.resample = torchaudio.transforms.Resample(rate, model_sr)
@@ -74,22 +79,63 @@ class KaldiDiarizationDataset(torch.utils.data.Dataset):
         for rec in tqdm.tqdm(self.data.wavs):
             data_len = int(self.data.reco2dur[rec] * rate / frame_shift)
             data_len = int(data_len / self.subsampling)
-            for st, ed in _gen_frame_indices(
-                    data_len, chunk_size, chunk_size, use_last_samples,
-                    label_delay=self.label_delay,
-                    subsampling=self.subsampling):
+            if voice_only:
+                st = 0
+                ed = data_len
                 start = st * self.subsampling
                 end = ed * self.subsampling
+                labels = feature.get_labels(self.data, rec, start, end, self.frame_size,self.frame_shift,None) # TODO- check speed of get info
+                # split labels into voice chunks
+                                # Find indices where the active status changes
+                sum_labels = np.sum(labels,axis=1) 
+                change_indices = np.where(np.diff( (sum_labels> 0)))[0] + 1
 
-                labels = feature.get_labels(self.data, rec, start, end, self.frame_size,self.frame_shift,None)
-                num_speakers = (np.sum(labels,axis=0) > 0).sum()
-                if self.n_speakers is not None and num_speakers > self.n_speakers:
+                # Split the array into segments based on the change indices
+                segments = np.split(labels, change_indices)
+                start = 0
+                for seg in segments:
+                    num_speakers = (np.sum(seg,axis=0) > 0).sum()
+                    if seg[0][0] == 0 or self.n_speakers is not None and num_speakers > self.n_speakers:
+                        start += seg.shape[0]
+                        continue
+                    seg_start = start 
+                    seg_end = start + seg.shape[0]
+                    if seg_end - seg_start > self.chunk_size:
+                        num_new_segments = math.ceil((seg_end - seg_start) / self.chunk_size)
+                        seg_shift = math.ceil((seg_end - seg_start) / num_new_segments)
+                        while seg_end - seg_start > seg_shift:
+                            self.chunk_indices.append(
+                                (rec, seg_start , (seg_start + seg_shift) ))
+                            seg_start += seg_shift
+                    if seg_end - seg_start < 10:
+                        continue
+                    self.chunk_indices.append(
+                        (rec, seg_start , seg_end ))
+                    start += seg.shape[0]
+            else:
+                
+                st = 0
+                ed = data_len
+                start = st * self.subsampling
+                end = ed * self.subsampling
+                labels_all = feature.get_labels(self.data, rec,start, end, self.frame_size,self.frame_shift,None)
+                for st, ed in _gen_frame_indices(
+                        data_len, chunk_size, chunk_size, use_last_samples,
+                        label_delay=self.label_delay,
+                        subsampling=self.subsampling):
+                    start = st * self.subsampling
+                    end = ed * self.subsampling
+
+                    # labels = feature.get_labels(self.data, rec, start, end, self.frame_size,self.frame_shift,None) 
+                    labels = labels_all[start:end] 
         
-                    continue
-                # nspeaker_dict[num_speakers] += 1
-
-                self.chunk_indices.append(
+                    num_speakers = (np.sum(labels,axis=0) > 0).sum()
+                    if self.n_speakers is not None and num_speakers > self.n_speakers:
+                        continue
+                        
+                    self.chunk_indices.append(
                         (rec, st * self.subsampling, ed * self.subsampling))
+
         # if len(self.chunk_indices) > 1000:
         #     self.chunk_indices = self.chunk_indices[2050:2150]
         #     # self.chunk_indices = self.chunk_indices[:500]
@@ -101,6 +147,7 @@ class KaldiDiarizationDataset(torch.utils.data.Dataset):
     def __getitem__(self, i):
         rec, st, ed = self.chunk_indices[i]
         if self.raw_wav:
+
             Y, wav_sr = feature.get_wav(self.data, rec, st, ed,self.frame_shift)
             Y_ss = torch.FloatTensor(Y)
             if wav_sr != self.model_sr:
@@ -110,14 +157,18 @@ class KaldiDiarizationDataset(torch.utils.data.Dataset):
             T_ss = torch.FloatTensor(T_ss)
             return Y_ss, T_ss
         else:
-            Y, T = feature.get_labeledSTFT(
-                self.data,
-                rec,
-                st,
-                ed,
-                self.frame_size,
-                self.frame_shift,
-                self.n_speakers)
+            if self.npy_dir is not None:
+                Y = feature.loadSTFT(self.data,rec,st,ed)
+                T = feature.get_labels(self.data, rec, st, ed, self.frame_size,self.frame_shift,self.n_speakers)
+            else:
+                Y, T = feature.get_labeledSTFT(
+                    self.data,
+                    rec,
+                    st,
+                    ed,
+                    self.frame_size,
+                    self.frame_shift,
+                    self.n_speakers)
             # Y: (frame, num_ceps)
             Y = feature.transform(Y, self.input_transform)
             # Y_spliced: (frame, num_ceps * (context_size * 2 + 1))

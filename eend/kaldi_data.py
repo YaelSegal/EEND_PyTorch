@@ -104,6 +104,13 @@ def load_reco2dur(reco2dur_file):
     lines = [line.strip().split(None, 1) for line in open(reco2dur_file)]
     return {x[0]: float(x[1]) for x in lines}
 
+def load_rec2npy(rec2npy_file):
+    """ returns dictionary { recid: list npy_rxfilename } """
+    if not os.path.exists(rec2npy_file):
+        return None
+    lines = [line.strip().split() for line in open(rec2npy_file)]
+    return {x[0]: x[1:] for x in lines}
+
 
 def process_wav(wav_rxfilename, process):
     """ This function returns preprocessed wav_rxfilename
@@ -144,19 +151,29 @@ def extract_segments(wavs, segments=None):
 
 
 class KaldiData:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, npy_dir=None):
         self.data_dir = data_dir
+        print("loading segments")
         self.segments = load_segments_rechash(
                 os.path.join(self.data_dir, 'segments'))
+        print("loading utt2spk")
         self.utt2spk = load_utt2spk(
                 os.path.join(self.data_dir, 'utt2spk'))
+        print("loading wav.scp")
         self.wavs = load_wav_scp(
                     os.path.join(self.data_dir, 'wav_fix.scp'))
-    
+        print("loading reco2dur")
         self.reco2dur = load_reco2dur(
                 os.path.join(self.data_dir, 'reco2dur'))
+        print("loading spk2utt")
         self.spk2utt = load_spk2utt(
                 os.path.join(self.data_dir, 'spk2utt'))
+        if npy_dir is not None:  
+            print("loading rec2npy")
+            self.rec2npy = load_rec2npy(os.path.join(npy_dir, os.path.basename(data_dir),'rec2npy.scp'))
+        else:
+            self.rec2npy = None
+
         self.wav_data_dir = "/home/mlspeech/shua/home/Shua/recipies/Diar/EEND/egs/callhome/v1/" # TODO- FIX TO NORMAL PATH
     def load_wav(self, recid, start=0, end=None):
         wav_path =  self.wavs[recid]    

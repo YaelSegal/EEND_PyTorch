@@ -2,18 +2,18 @@
 sampling_rate: 8000
 frame_size: 200
 frame_shift: 80
-model_type: TitanetEDA #Transformer, EDATransformer 
+model_type: Transformer #Transformer
 max_epochs: 100
 gradclip: 5
-batchsize: 64 # 128, 64
+batchsize: 128 # 128, 64
 hidden_size: 256
 num_frames: 500 # 500, 1000
 test_num_frames: 31000 # 500, 1000
 num_speakers: -1 # TODO-1: change this to 4
 input_transform: logmel23_mn
 optimizer: noam
-lr: 4.0
-context_size: 2
+lr: 1.0
+context_size: 7
 subsampling: 2 # 2, 10
 gradient_accumulation_steps: 1
 transformer_encoder_n_heads: 4
@@ -29,7 +29,7 @@ tensorboard: False
 patience: 10
 stop_measure: val/loss
 stop_measure_type: min
-attractor_loss_ratio: 1.0
+attractor_loss_ratio: 0
 attractor_encoder_dropout: 0.1
 attractor_decoder_dropout: 0.1
 shuffle: True
@@ -40,5 +40,6 @@ num_workers: 0
 speaker_threshold: 0.5
 max_num_speakers: -1
 freeze_encoder: False
-raw_wav: True
-model_sr: 16000
+raw_wav: False
+model_sr: 8000
+# npy_dir: /home/data/segalya/EEND_data/data

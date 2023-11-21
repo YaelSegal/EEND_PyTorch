@@ -14,7 +14,7 @@ from torch.optim.lr_scheduler import _LRScheduler
 from torch.optim import Optimizer
 import nemo.collections.asr as nemo_asr
 from math import ceil
-
+from eend.pytorch_backend import utils
 class NoamScheduler(_LRScheduler):
     """
     See https://arxiv.org/pdf/1706.03762.pdf
@@ -110,6 +110,7 @@ class TransformerModel(nn.Module):
         else:
             self.src_mask = None
 
+        src_key_padding_mask  = 1 - utils.build_mask_by_len(ilens, device=src.device)
         # ilens = [x.shape[0] for x in src]
         # src = nn.utils.rnn.pad_sequence(src, padding_value=-1, batch_first=True)
 
@@ -122,7 +123,7 @@ class TransformerModel(nn.Module):
             # src: (T, B, E)
             src = self.pos_encoder(src)
         # output: (T, B, E)
-        output = self.transformer_encoder(src, self.src_mask)
+        output = self.transformer_encoder(src, self.src_mask, src_key_padding_mask=src_key_padding_mask)
         # output: (B, T, E)
         output = output.transpose(0, 1)
         if self.decode:
@@ -131,8 +132,6 @@ class TransformerModel(nn.Module):
 
             if activation:
                 output = activation(output)
-
-            output = [out[:ilen] for out, ilen in zip(output, ilens)]
 
             return output
         else:
@@ -445,6 +444,53 @@ class TitanetEDADiarization(nn.Module):
         logits[non_active_speaker.squeeze(2)] = -torch.inf
         return logits.transpose(1, 2), attractors_prob
 
+class TitanetDiarization(nn.Module):
+    def __init__(
+        self,
+        n_units,
+        context=1,
+        num_speakers=15,
+        freeze_encoder=False,
+    ):
+        """Self-attention-based diarization model.
+
+        Args:
+          n_units (int): Number of units in a self-attention block
+          attractor_encoder_dropout (float)
+          attractor_decoder_dropout (float)
+        """
+        super(TitanetDiarization, self).__init__()
+
+        self.enc = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="titanet_large")
+        if freeze_encoder:
+            for param in self.enc.parameters():
+                param.requires_grad = False
+        else:
+            for param in self.enc.parameters():
+                param.requires_grad = True
+        self.contector = nn.Sequential(
+            nn.Linear(3072, n_units),
+            nn.ReLU(),
+            LambdaLayer(lambda x: x.transpose(1, 2)),
+            nn.AvgPool1d(kernel_size=context),
+            LambdaLayer(lambda x: x.transpose(1, 2)),
+        )  # check input dim!
+        self.linear = nn.Linear(n_units, num_speakers)
+        self.context = context
+
+    def enc_foward(self, xs, lens=None):
+        processed_signal, processed_signal_len = self.enc.preprocessor(
+            input_signal=xs,
+            length=torch.LongTensor(lens).to(xs.device) if lens is not None else None,
+        )
+        encoded, length = self.enc.encoder(audio_signal=processed_signal, length=processed_signal_len)
+        return encoded, length
+
+    def forward(self, xs, xlens, n_speakers=None, activation=None):
+        emb, new_lengths = self.enc_foward(xs, xlens)
+        emb = self.contector(emb.transpose(1, 2))
+        logits = self.linear(emb)
+        return logits
 
 if __name__ == "__main__":
     import torch

@@ -15,11 +15,12 @@ from torch import optim
 from eend.pytorch_backend.diarization_dataset import KaldiDiarizationDataset, my_collate
 from eend.pytorch_backend.loss import  speakers_loss,batch_pit_n_speaker_loss, DiarizationErrorPyannoteProcess, DiarizationErrorPyannote, DiarizationErrorPyannoteProcessMetric
 from eend.pytorch_backend import utils
-from eend.pytorch_backend.models import TransformerModel, TransformerEDADiarization, TitanetEDADiarization, NoamScheduler
+from eend.pytorch_backend.models import TransformerModel, TransformerEDADiarization, TitanetEDADiarization, TitanetDiarization, NoamScheduler
 from eend import feature
 import wandb
 import time
 import json
+
 class KaldiDiarizationLightningData(LightningDataModule):
     def __init__(self, config):
         super().__init__()
@@ -45,6 +46,8 @@ class KaldiDiarizationLightningData(LightningDataModule):
             n_speakers=config.num_speakers,
             model_sr=config.model_sr,
             raw_wav=config.raw_wav,
+            npy_dir=config.npy_dir,
+            voice_only=config.voice_only,
             )
             print("Loading val dataset")
             self.val_dataset =  KaldiDiarizationDataset(
@@ -61,6 +64,8 @@ class KaldiDiarizationLightningData(LightningDataModule):
                                 n_speakers=config.num_speakers,
                                 model_sr=config.model_sr,
                                 raw_wav=config.raw_wav,
+                                npy_dir=config.npy_dir,
+                                voice_only=config.voice_only,
                                 )
        
 
@@ -81,6 +86,8 @@ class KaldiDiarizationLightningData(LightningDataModule):
                                 n_speakers=config.num_speakers,
                                 model_sr=config.model_sr,
                                 raw_wav=config.raw_wav,
+                                npy_dir=config.npy_dir,
+                                voice_only=config.voice_only,
                                 )
 
     def train_dataloader(self):
@@ -163,6 +170,18 @@ class TransformerEDADiarizationLightning(pl.LightningModule):
     def update_max_speakers(self, max_n_speakers):
         self.config["max_num_speakers"] = max_n_speakers
 
+    def update_config_dict(self, config):
+        self.config = config
+        self.save_hyperparameters(config)
+        
+    def update_diarization_annote(self, config):
+        self.config["collar"] = config.collar
+        self.config["skip_overlap"] = config.skip_overlap
+        self.config["subsampling"] = config.subsampling
+        self.config["frame_shift"] = config.frame_shift
+        self.config["sampling_rate"] = config.sampling_rate
+        self.pyannote_stats = DiarizationErrorPyannoteProcessMetric(collar=self.config["collar"],skip_overlap=self.config["skip_overlap"],
+                                        window=(self.config["frame_shift"]/self.config["sampling_rate"])*self.config["subsampling"])
     def forward(self, y_tensor, n_speakers):
         # in lightning, forward defines the prediction/inference actions
         logits, attractors_prob = self.model(y_tensor, n_speakers=n_speakers) # TODO- implement forward to infererence
@@ -341,6 +360,15 @@ class TitanetEDADiarizationLightning(pl.LightningModule):
     def update_max_speakers(self, max_n_speakers):
         self.config["max_num_speakers"] = max_n_speakers
 
+    def update_diarization_annote(self, config):
+        self.config["collar"] = config.collar
+        self.config["skip_overlap"] = config.skip_overlap
+        self.config["subsampling"] = config.subsampling
+        self.config["frame_shift"] = config.frame_shift
+        self.config["sampling_rate"] = config.sampling_rate
+        self.pyannote_stats = DiarizationErrorPyannoteProcessMetric(collar=self.config["collar"],skip_overlap=self.config["skip_overlap"],
+                                        window=(self.config["frame_shift"]/self.config["sampling_rate"])*self.config["subsampling"])
+        
     def forward(self, y_tensor, n_speakers):
         # in lightning, forward defines the prediction/inference actions
         logits, attractors_prob = self.model(y_tensor, n_speakers=n_speakers) # TODO- implement forward to infererence
@@ -491,6 +519,361 @@ class TitanetEDADiarizationLightning(pl.LightningModule):
                 },
                 }
 
+class TransformerDiarizationLightning(pl.LightningModule):
+    def __init__(self, config):
+        super().__init__()
+
+        self.config = config    
+        self.config["speaker_threshold"] = config.get("speaker_threshold", 0.5)
+        self.config["max_num_speakers"] = config.get("max_num_speakers", -1)
+        if config["input_transform"] == 'log':  #
+            n_fft = 1 << (self.config.frame_size-1).bit_length()
+            in_size = 1 + n_fft/2
+        else:
+            in_size = feature.get_nfeatures(config["input_transform"]) * (config["context_size"] * 2 + 1)
+        self.model = TransformerModel(in_size=in_size,
+                                        n_units=self.config["hidden_size"],
+                                        n_heads=self.config["transformer_encoder_n_heads"],
+                                        n_layers=self.config["transformer_encoder_n_layers"],
+                                        dropout=self.config["transformer_encoder_dropout"],
+                                        decode=True,
+                                        has_pos=False,
+                                        n_speakers=15) # TODO- check the 15- so will work by num_speakers
+                
+    
+     
+    
+        self.train_loss_tracker = MeanMetric()
+        self.pit_los_tracker = MeanMetric()
+        self.speakers_loss_tracker = MeanMetric()
+        self.val_loss_tracker = MeanMetric()
+        self.val_pit_los_tracker = MeanMetric()
+        self.val_speakers_loss_tracker = MeanMetric()
+        self.pyannote_stats = DiarizationErrorPyannoteProcessMetric(collar=self.config["collar"],skip_overlap=self.config["skip_overlap"],
+                                        window=(self.config["frame_shift"]/self.config["sampling_rate"])*self.config["subsampling"])
+  
+        self.save_hyperparameters(config)
+        self.last_time = time.time()
+
+    def update_max_speakers(self, max_n_speakers):
+        self.config["max_num_speakers"] = max_n_speakers
+
+    def update_config_dict(self, config):
+        self.config = config
+
+    def update_diarization_annote(self, config):
+        self.config["collar"] = config.collar
+        self.config["skip_overlap"] = config.skip_overlap
+        self.config["subsampling"] = config.subsampling
+        self.config["frame_shift"] = config.frame_shift
+        self.config["sampling_rate"] = config.sampling_rate
+        self.pyannote_stats = DiarizationErrorPyannoteProcessMetric(collar=self.config["collar"],skip_overlap=self.config["skip_overlap"],
+                                        window=(self.config["frame_shift"]/self.config["sampling_rate"])*self.config["subsampling"])
+    def forward(self, y_tensor, n_speakers):
+        # in lightning, forward defines the prediction/inference actions
+        logits = self.model(y_tensor, n_speakers=n_speakers) # TODO- implement forward to infererence
+        return logits 
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+    
+    def freeze(self, freeze):
+        self.model.freeze(freeze)
+
+    def training_step(self, batch, batch_idx):
+        # training_step defines the train loop. It is independent of forward
+
+        device = self.device
+        y, t = batch
+        n_speakers = [ti.shape[1] for ti in t] 
+        n_speakers_active = [(torch.sum(ti,axis=0) > 0).sum().item() for ti in t] 
+        lens = [ti.shape[0] for ti in t]
+        y_tensor = nn.utils.rnn.pad_sequence(y, padding_value=-1, batch_first=True)
+
+        output = self.model(y_tensor, lens)
+
+        logits = output
+        
+        mask = utils.build_mask_by_len(lens, device=device)
+
+        pit_loss, label = batch_pit_n_speaker_loss(logits, t, n_speakers,mask)
+
+        total_loss = pit_loss
+        self.pit_los_tracker(pit_loss)
+
+        self.train_loss_tracker(total_loss)
+
+        return total_loss.mean()
+
+
+    def training_epoch_end(self, outs):
+        # log epoch metric
+        self.log("train/loss", self.train_loss_tracker.compute(), on_step=False,on_epoch=True, prog_bar=True)
+        self.log("train/pit_loss", self.pit_los_tracker.compute(), on_step=False,on_epoch=True, prog_bar=False)
+        if self.config["attractor_loss_ratio"] > 0:
+            self.log("train/batch_speakers_loss", self.speakers_loss_tracker.compute(), on_step=False,on_epoch=True, prog_bar=False)
+
+        self.train_loss_tracker.reset()
+        self.pit_los_tracker.reset()
+        self.speakers_loss_tracker.reset()
+
+        
+    def validation_step(self, batch, batch_idx):
+        return self.eval_step(batch, batch_idx, "val")
+    
+    def test_step(self, batch, batch_idx):
+        return self.eval_step(batch, batch_idx, "test")
+
+
+    def eval_step(self, batch, batch_idx, step_type):
+        device = self.device
+        y, t = batch
+        n_speakers = [ti.shape[1] for ti in t] 
+        n_speakers_active = [(torch.sum(ti,axis=0) > 0).sum().item() for ti in t] 
+        lens = [ti.shape[0] for ti in t]
+        y_tensor = nn.utils.rnn.pad_sequence(y, padding_value=-1, batch_first=True)
+
+
+        logits = self.model(y_tensor, lens)
+        n_speakers_der = n_speakers
+        mask = utils.build_mask_by_len(lens, device=device)
+
+        pit_loss, label = batch_pit_n_speaker_loss(logits, t, n_speakers,mask)
+        total_loss = pit_loss
+        self.val_pit_los_tracker(pit_loss)
+
+        self.val_loss_tracker(total_loss)
+
+        batch_states = self.pyannote_stats(logits,label, lens, n_speakers_der)
+
+        self.log(f'{step_type}/loss', self.val_loss_tracker, on_step=False, on_epoch=True, prog_bar=True)
+        self.log(f'{step_type}/pit_loss', self.val_pit_los_tracker, on_step=False, on_epoch=True, prog_bar=False)
+        if self.config["attractor_loss_ratio"] > 0:
+            self.log(f'{step_type}/speakers_loss', self.val_speakers_loss_tracker, on_step=False, on_epoch=True, prog_bar=False)
+        
+
+        return OrderedDict({f'{step_type}_states': batch_states})
+
+    def validation_epoch_end(self, outputs): 
+        return self.eval_step_end(outputs, "val")
+
+
+    def test_epoch_end(self, outputs): 
+        return self.eval_step_end(outputs, "test")
+
+
+    def eval_step_end(self, outputs, step_type):
+
+        all_states_tensor = self.pyannote_stats.compute()
+        for key, value in zip(["DER", "confusion", "missed detection","false alarm","correct","total"],all_states_tensor):
+            prog_bar = True if key == "DER" or key=="total" else False
+            self.log(f'{step_type}/{key}', value, on_step=False, on_epoch=True, prog_bar=prog_bar)
+            
+        self.pyannote_stats.reset()
+        self.val_loss_tracker.reset()
+        self.val_pit_los_tracker.reset()
+        self.val_speakers_loss_tracker.reset()
+
+    def configure_optimizers(self):
+        if self.config['optimizer'] == 'adam':
+            optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=self.config["lr"])
+        elif self.config['optimizer'] == 'sgd':
+            optimizer = optim.SGD(filter(lambda p: p.requires_grad, self.parameters()), lr=self.config["lr"])
+        elif self.config['optimizer'] == 'noam':
+            # for noam, lr refers to base_lr (i.e. scale), suggest lr=1.0
+            optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=self.config["lr"], betas=(0.9, 0.98), eps=1e-9)
+        else:
+            raise ValueError(self.config['optimizer'])
+
+        # For noam, we use noam scheduler
+        if self.config["optimizer"] == 'noam':
+            scheduler = NoamScheduler(optimizer,
+                                    self.config["hidden_size"],
+                                    warmup_steps=self.config["noam_warmup_steps"])
+        
+        else:
+            scheduler = None
+        return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "monitor": self.config["stop_measure"],
+                },
+                }
+
+class TitanetDiarizationLightning(pl.LightningModule):
+    def __init__(self, config):
+        super().__init__()
+
+        self.config = config    
+        self.config["speaker_threshold"] = config.get("speaker_threshold", 0.5)
+        self.config["max_num_speakers"] = config.get("max_num_speakers", -1)
+        self.model = TitanetDiarization( 
+                                        n_units=self.config["hidden_size"],
+                                        context=self.config["context_size"],
+                                        num_speakers = 15,
+                                        freeze_encoder=self.config["freeze_encoder"]) 
+  
+        
+        self.train_loss_tracker = MeanMetric()
+        self.pit_los_tracker = MeanMetric()
+        self.speakers_loss_tracker = MeanMetric()
+        self.val_loss_tracker = MeanMetric()
+        self.val_pit_los_tracker = MeanMetric()
+        self.val_speakers_loss_tracker = MeanMetric()
+        self.pyannote_stats = DiarizationErrorPyannoteProcessMetric(collar=self.config["collar"],skip_overlap=self.config["skip_overlap"],
+                                        window=(self.config["frame_shift"]/self.config["sampling_rate"])*self.config["subsampling"])
+  
+        self.save_hyperparameters(config)
+        self.last_time = time.time()
+
+    def update_max_speakers(self, max_n_speakers):
+        self.config["max_num_speakers"] = max_n_speakers
+
+    def update_diarization_annote(self, config):
+        self.config["collar"] = config.collar
+        self.config["skip_overlap"] = config.skip_overlap
+        self.config["subsampling"] = config.subsampling
+        self.config["frame_shift"] = config.frame_shift
+        self.config["sampling_rate"] = config.sampling_rate
+        self.pyannote_stats = DiarizationErrorPyannoteProcessMetric(collar=self.config["collar"],skip_overlap=self.config["skip_overlap"],
+                                        window=(self.config["frame_shift"]/self.config["sampling_rate"])*self.config["subsampling"])
+        
+    def forward(self, y_tensor, lens):
+        # in lightning, forward defines the prediction/inference actions
+        logits = self.model(y_tensor,lens) # TODO- implement forward to infererence
+        return logits 
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+    
+    def freeze(self, freeze):
+        self.model.freeze(freeze)
+
+    def training_step(self, batch, batch_idx):
+        # training_step defines the train loop. It is independent of forward
+
+        device = self.device
+        y, t = batch
+        n_speakers = [ti.shape[1] for ti in t] 
+        n_speakers_active = [(torch.sum(ti,axis=0) > 0).sum().item() for ti in t] 
+        lens = [ti.shape[0] for ti in t]
+        xlens = [yi.shape[0] for yi in y]
+        y_tensor = nn.utils.rnn.pad_sequence(y, padding_value=-1, batch_first=True)
+
+        output = self.model(y_tensor, xlens)
+
+        logits = output
+        
+        mask = utils.build_mask_by_len(lens, device=device)
+
+        pit_loss, label = batch_pit_n_speaker_loss(logits, t, n_speakers,mask)
+
+        total_loss = pit_loss
+        self.pit_los_tracker(pit_loss)
+
+        self.train_loss_tracker(total_loss)
+
+        return total_loss.mean()
+
+
+    def training_epoch_end(self, outs):
+        # log epoch metric
+        self.log("train/loss", self.train_loss_tracker.compute(), on_step=False,on_epoch=True, prog_bar=True)
+        self.log("train/pit_loss", self.pit_los_tracker.compute(), on_step=False,on_epoch=True, prog_bar=False)
+        if self.config["attractor_loss_ratio"] > 0:
+            self.log("train/batch_speakers_loss", self.speakers_loss_tracker.compute(), on_step=False,on_epoch=True, prog_bar=False)
+
+        self.train_loss_tracker.reset()
+        self.pit_los_tracker.reset()
+        self.speakers_loss_tracker.reset()
+
+        
+    def validation_step(self, batch, batch_idx):
+        return self.eval_step(batch, batch_idx, "val")
+    
+    def test_step(self, batch, batch_idx):
+        return self.eval_step(batch, batch_idx, "test")
+
+
+    def eval_step(self, batch, batch_idx, step_type):
+        device = self.device
+        y, t = batch
+        n_speakers = [ti.shape[1] for ti in t] 
+        n_speakers_active = [(torch.sum(ti,axis=0) > 0).sum().item() for ti in t] 
+        lens = [ti.shape[0] for ti in t]
+        xlens = [yi.shape[0] for yi in y]
+        y_tensor = nn.utils.rnn.pad_sequence(y, padding_value=-1, batch_first=True)
+
+
+        logits = self.model(y_tensor, xlens)
+        n_speakers_der = n_speakers
+        mask = utils.build_mask_by_len(lens, device=device)
+
+        pit_loss, label = batch_pit_n_speaker_loss(logits, t, n_speakers,mask)
+        total_loss = pit_loss
+        self.val_pit_los_tracker(pit_loss)
+
+        self.val_loss_tracker(total_loss)
+
+        batch_states = self.pyannote_stats(logits,label, lens, n_speakers_der)
+
+        self.log(f'{step_type}/loss', self.val_loss_tracker, on_step=False, on_epoch=True, prog_bar=True)
+        self.log(f'{step_type}/pit_loss', self.val_pit_los_tracker, on_step=False, on_epoch=True, prog_bar=False)
+        if self.config["attractor_loss_ratio"] > 0:
+            self.log(f'{step_type}/speakers_loss', self.val_speakers_loss_tracker, on_step=False, on_epoch=True, prog_bar=False)
+        
+
+        return OrderedDict({f'{step_type}_states': batch_states})
+
+    def validation_epoch_end(self, outputs): 
+        return self.eval_step_end(outputs, "val")
+
+
+    def test_epoch_end(self, outputs): 
+        return self.eval_step_end(outputs, "test")
+
+
+    def eval_step_end(self, outputs, step_type):
+
+        all_states_tensor = self.pyannote_stats.compute()
+        for key, value in zip(["DER", "confusion", "missed detection","false alarm","correct","total"],all_states_tensor):
+            prog_bar = True if key == "DER" or key=="total" else False
+            self.log(f'{step_type}/{key}', value, on_step=False, on_epoch=True, prog_bar=prog_bar)
+            
+        self.pyannote_stats.reset()
+        self.val_loss_tracker.reset()
+        self.val_pit_los_tracker.reset()
+        self.val_speakers_loss_tracker.reset()
+
+    def configure_optimizers(self):
+        if self.config['optimizer'] == 'adam':
+            optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=self.config["lr"])
+        elif self.config['optimizer'] == 'sgd':
+            optimizer = optim.SGD(filter(lambda p: p.requires_grad, self.parameters()), lr=self.config["lr"])
+        elif self.config['optimizer'] == 'noam':
+            # for noam, lr refers to base_lr (i.e. scale), suggest lr=1.0
+            optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=self.config["lr"], betas=(0.9, 0.98), eps=1e-9)
+        else:
+            raise ValueError(self.config['optimizer'])
+
+        # For noam, we use noam scheduler
+        if self.config["optimizer"] == 'noam':
+            scheduler = NoamScheduler(optimizer,
+                                    self.config["hidden_size"],
+                                    warmup_steps=self.config["noam_warmup_steps"])
+        
+        else:
+            scheduler = None
+        return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "monitor": self.config["stop_measure"],
+                },
+                }
 
 
 def train(hparams):
@@ -512,11 +895,21 @@ def train(hparams):
     if hparams.initmodel:
         print(f"Load model from {hparams.initmodel}")
         if hparams.model_type == 'Transformer':
-            raise NotImplementedError # TODO: implement reg transformer for pytorch lightning
+            if hparams.initmodel.split("/")[-1].split(".")[-1] == "ckpt":
+                model = TransformerDiarizationLightning.load_from_checkpoint(hparams.initmodel)
+                model.update_diarization_annote(hparams)
+
+            else:
+                model = TransformerDiarizationLightning(config)
+                model.model.load_state_dict(torch.load(hparams.initmodel)) 
+
         elif hparams.model_type == 'EDATransformer':
             if hparams.initmodel.split("/")[-1].split(".")[-1] == "ckpt":
                 model = TransformerEDADiarizationLightning.load_from_checkpoint(hparams.initmodel)
                 model.update_max_speakers(hparams.max_num_speakers)
+                model.update_diarization_annote(hparams)
+                if hparams.wandb_id is None:
+                    model.update_config_dict(config)
             else:
                 model = TransformerEDADiarizationLightning(config)
                 model.model.load_state_dict(torch.load(hparams.initmodel))
@@ -527,16 +920,26 @@ def train(hparams):
             else:
                 model = TitanetEDADiarizationLightning(config)
                 model.model.load_state_dict(torch.load(hparams.initmodel))
+        elif hparams.model_type == 'TitanetD':
+            if hparams.initmodel.split("/")[-1].split(".")[-1] == "ckpt":
+                model = TitanetDiarizationLightning.load_from_checkpoint(hparams.initmodel)
+                model.update_max_speakers(hparams.max_num_speakers)
+                model.update_diarization_annote(hparams)
+            else:
+                model = TitanetDiarizationLightning(config)
+                model.model.load_state_dict(torch.load(hparams.initmodel))
         else:
             raise ValueError('Possible model_type is "Transformer" or "EDATransformer"')
     
     else:
         if hparams.model_type == 'Transformer':
-            raise NotImplementedError # TODO: implement reg transformer for pytorch lightning
+            model = TransformerDiarizationLightning(config)
         elif hparams.model_type == 'EDATransformer':
             model = TransformerEDADiarizationLightning(config)
         elif hparams.model_type == 'TitanetEDA':
             model = TitanetEDADiarizationLightning(config)
+        elif hparams.model_type == 'TitanetD':
+            model = TitanetDiarizationLightning(config)
         else:
             raise ValueError('Possible model_type is "Transformer" or "EDATransformer"')
     
@@ -600,6 +1003,8 @@ def train(hparams):
     else:
         accelerator = 'gpu'
         devices = hparams.gpu
+        
+
     trainer = Trainer(
             logger=loggers_list,
             check_val_every_n_epoch=1,

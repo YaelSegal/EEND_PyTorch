@@ -5,14 +5,14 @@ frame_shift: 80
 model_type: EDATransformer #Transformer
 max_epochs: 100
 gradclip: 5
-batchsize: 128 # 128, 64
+batchsize: 64 # 128, 64
 hidden_size: 256
 num_frames: 500 # 500, 1000
 test_num_frames: 31000 # 500, 1000
 num_speakers: -1 # TODO-1: change this to 4
 input_transform: logmel23_mn
 optimizer: noam
-lr: 1.0
+lr: 2.0
 context_size: 7
 subsampling: 2 # 2, 10
 gradient_accumulation_steps: 1
@@ -42,3 +42,5 @@ max_num_speakers: -1
 freeze_encoder: False
 raw_wav: False
 model_sr: 8000
+# npy_dir: /home/data/segalya/EEND_data/data
+initmodel: /home/mlspeech/segalya/PhDprojects/EEND_PyTorch/pretrained_models/EDA10sec_2spk_fisher/epoch_218.ckpt

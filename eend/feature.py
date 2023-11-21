@@ -317,6 +317,11 @@ def get_labeledSTFT(
     else:
         return Y, T
 
+def loadSTFT(kaldi_obj,rec, start, end):
+    stft_array = np.load(kaldi_obj.rec2npy[rec][0])
+    stft_array = stft_array[start:end]
+    return stft_array
+
 def get_labels(
         kaldi_obj,
         rec, start, end, frame_size, frame_shift,

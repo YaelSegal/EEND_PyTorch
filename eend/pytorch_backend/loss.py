@@ -438,10 +438,10 @@ class DiarizationErrorPyannoteProcessMetric(Metric):
 
         example_pred = example_pred[:example_len]
         example_target = example_target[:example_len]
-        example_pred = example_pred[:, :n_spk] # remove last speaker
-        example_pred = example_pred > self.threshold
+        example_pred = example_pred[:, :n_spk] # remove last speakers
+        example_pred_bool = example_pred > self.threshold
 
-        pred_speaker_segments = create_speaker_segments(example_pred, n_spk)
+        pred_speaker_segments = create_speaker_segments(example_pred_bool, n_spk)
         target_speaker_segments = create_speaker_segments(example_target, n_spk)
         pred_segments_array_sorted = sorted(pred_speaker_segments,key =lambda x:x[0])
         tagret_segments_array_sorted = sorted(target_speaker_segments,key =lambda x:x[0])

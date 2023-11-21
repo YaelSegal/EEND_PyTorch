@@ -23,6 +23,8 @@ parser.add_argument('model_save_dir',
                     help='output model_save_dirdirectory which model file will be saved in.')
 parser.add_argument('--test_data_dir',
                     help='kaldi-style data dir used for test.')
+parser.add_argument('--npy_dir', default=None,
+                    help='npy_dir')
 parser.add_argument('--model-type', default='Transformer',
                     help='Type of model (Transformer)')
 
@@ -87,7 +89,8 @@ parser.add_argument('--wandb_id', default=None, type=str)
 parser.add_argument('--freeze_encoder',default=False, action='store_true' )
 parser.add_argument('--raw_wav',default=False, action='store_true' )
 parser.add_argument('--model_sr', default=8000, type=int)
-parser.add_argument('--num_workers', default=8000, type=int)
+parser.add_argument('--num_workers', default=8, type=int)
+parser.add_argument('--voice_only',default=False, action='store_true' )
 
 args = parser.parse_args()
 
